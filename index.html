@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArcGIS Feature Layer Visualization</title>
+  <link rel="stylesheet" href="https://js.arcgis.com/4.27/esri/themes/light/main.css">
+  <script src="https://js.arcgis.com/4.27/"></script>
+
+  <style>
+    #viewDiv {
+      height: 90vh;
+      width: 100%;
+    }
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background-color: white;
+      padding: 10px;
+      z-index: 99;
+      border-radius: 5px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+    }
+    #toggleControls {
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <label for="fieldSelector">Select Field to Visualize:</label>
+    <select id="fieldSelector">
+      <option value="Sum_of_Intake_Gross">Sum of Intake Gross</option>
+      <option value="Average_of_Save_Rate">Average of Save Rate</option>
+      <option value="Count_of_Organization">Count of Organization</option>
+    </select>
+
+    <div id="toggleControls">
+      <button id="toggleHeatmap">Toggle Heatmap</button>
+    </div>
+  </div>
+  <div id="viewDiv"></div>
+
+  <script>
+    require([
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/layers/FeatureLayer",
+      "esri/widgets/Legend",
+      "esri/renderers/HeatmapRenderer",
+      "esri/renderers/SimpleRenderer",
+      "esri/symbols/SimpleMarkerSymbol"
+    ], function (Map, MapView, FeatureLayer, Legend, HeatmapRenderer, SimpleRenderer, SimpleMarkerSymbol) {
+      // Create the map
+      const map = new Map({
+        basemap: "streets-vector"
+      });
+
+      // Create the view
+      const view = new MapView({
+        container: "viewDiv",
+        map: map,
+        center: [-99.9, 32.9],
+        zoom: 6
+      });
+
+      // Add the first feature layer (County Data)
+      const featureLayer1 = new FeatureLayer({
+        url: "https://services1.arcgis.com/7DRakJXKPEhwv0fM/arcgis/rest/services/cntytoshelterdat/FeatureServer",
+        title: "County to Shelter Data",
+        popupTemplate: {
+          title: "County: {CNTY_NM}",
+          content: `
+            <p><b>Capacity:</b> {Sum of Intake Gross}</p>
+            <p><b>Save Rate:</b> {Average of Save Rate}</p>
+            <p><b>Total Shelters in Database:</b> {Count of Organization}</p>
+          `
+        }
+      });
+
+      // Add the second feature layer (Shelter Data)
+      const featureLayer2 = new FeatureLayer({
+        url: "https://services1.arcgis.com/7DRakJXKPEhwv0fM/arcgis/rest/services/shelter_level_data_for_geocoding/FeatureServer",
+        title: "Shelter Level Data",
+        popupTemplate: {
+          title: "Shelter: {Organization}",
+          content: `
+            <p><b>Organization Type:</b> {Organization Type}</p>
+            <p><b>Save Rate:</b> {Save Rate}</p>
+            <p><b>Intake:</b> {Intake Gross}</p>
+            <p><b>Data Year:</b> {Data Year}</p>
+          `
+        }
+      });
+
+      map.add(featureLayer1);
+      map.add(featureLayer2);
+
+      // Initialize the legend and add it to the map
+      const legend = new Legend({
+        view: view,
+        layerInfos: [{
+          layer: featureLayer1,
+          title: "County Data"
+        }]
+      });
+      view.ui.add(legend, "bottom-right");
+
+      // Function to calculate natural breaks (Jenks)
+      function jenksBreaks(arr, numClasses) {
+        const breaks = [];
+        const data = [...arr].sort((a, b) => a - b); // Sort the data
+
+        const range = (data[data.length - 1] - data[0]);
+        const step = range / numClasses;
+
+        // Generate the breaks
+        for (let i = 0; i < numClasses; i++) {
+          breaks.push(data[0] + step * i);
+        }
+        breaks.push(data[data.length - 1]);
+
+        return breaks;
+      }
+
+      // Function to update the renderer and legend
+      function updateRenderer(field) {
+        featureLayer1.queryFeatures({
+          where: "1=1",  // Select all features
+          outFields: [field]
+        }).then((results) => {
+          const fieldValues = results.features.map(f => f.attributes[field]);
+
+          const filteredValues = fieldValues.filter(value => value !== 0 && value != null && value !== undefined);
+
+          if (filteredValues.length === 0) {
+            console.error("No valid data for natural breaks calculation.");
+            return;
+          }
+
+          const breaks = jenksBreaks(filteredValues, 5);
+
+          featureLayer1.renderer = {
+            type: "simple",
+            symbol: {
+              type: "simple-fill",
+              color: "rgba(0, 0, 255, 0.5)", 
+              outline: {
+                width: 0.5,
+                color: "black"
+              }
+            },
+            visualVariables: [{
+              type: "color",
+              field: field,
+              stops: breaks.map((breakValue, index) => ({
+                value: breakValue,
+                color: `rgba(${Math.min(255, index * 50)}, ${Math.min(255, index * 100)}, 255, 0.5)`,
+                label: `${breakValue.toFixed(2)}`
+              }))
+            }]
+          };
+
+          legend.layerInfos[0].classBreakInfos = breaks.map((breakValue, index) => ({
+            minValue: breakValue,
+            maxValue: breaks[index + 1] || breakValue,
+            label: `${breakValue.toFixed(2)} - ${breaks[index + 1]?.toFixed(2) || breakValue.toFixed(2)}`,
+            symbol: {
+              type: "simple-fill",
+              color: `rgba(${Math.min(255, index * 50)}, ${Math.min(255, index * 100)}, 255, 0.5)`,
+              outline: { width: 0.5, color: "black" }
+            }
+          }));
+        });
+      }
+
+      // Toggle between points and heatmap for featureLayer2
+      let isHeatmap = false;
+      function toggleVisualization() {
+        if (isHeatmap) {
+          featureLayer2.renderer = new SimpleRenderer({
+            symbol: new SimpleMarkerSymbol({
+              color: [255, 0, 0], // Red points
+              size: 6,
+              outline: { color: [255, 255, 255], width: 1 }
+            })
+          });
+        } else {
+          featureLayer2.renderer = new HeatmapRenderer({
+            colorStops: [
+              { ratio: 0, color: "rgba(0, 255, 255, 0)" },
+              { ratio: 0.2, color: "rgba(0, 255, 255, 1)" },
+              { ratio: 0.4, color: "rgba(0, 255, 0, 1)" },
+              { ratio: 0.6, color: "rgba(255, 255, 0, 1)" },
+              { ratio: 0.8, color: "rgba(255, 165, 0, 1)" },
+              { ratio: 1, color: "rgba(255, 0, 0, 1)" }
+            ],
+            maxPixelIntensity: 100,
+            minPixelIntensity: 0
+          });
+        }
+        isHeatmap = !isHeatmap;
+      }
+
+      // Event listener for the toggle button
+      const toggleButton = document.getElementById("toggleHeatmap");
+      toggleButton.addEventListener("click", toggleVisualization);
+
+      // Event listener for field selector dropdown
+      const fieldSelector = document.getElementById("fieldSelector");
+      fieldSelector.addEventListener("change", (event) => {
+        const selectedField = event.target.value;
+        updateRenderer(selectedField); // Update renderer for featureLayer1
+      });
+
+      // Set the default visualization field
+      updateRenderer(fieldSelector.value);
+    });
+  </script>
+</body>
+</html>
